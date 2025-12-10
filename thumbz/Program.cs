@@ -2,33 +2,29 @@
 using SixLabors.ImageSharp;
 using System.Diagnostics;
 using thumbz.service;
-
 // 1. Validation
 if (!args.Any())
 {
     Console.WriteLine("No paths supplied. Usage: thumbz <path1> <path2>");
     return;
 }
-
 // 2. Load Config
 var configuration = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
     .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
     .Build();
-
 var cnf = configuration
     .GetSection("AppSettings:ThumbnailSheetConfig")
     .Get<ThumbnailSheetConfig>()!;
-
 // 3. Init Service
 var thumbz = new Thumbz(cnf);
 var sw = new Stopwatch();
-
 // 4. Run
 foreach (string path in args)
 {
     if (Directory.Exists(path))
     {
+        CleanOrphanedThumbnails(path);
         await ProcessDirectory(path);
     }
     else
@@ -37,26 +33,58 @@ foreach (string path in args)
     }
 }
 
+void CleanOrphanedThumbnails(string path)
+{
+    Console.WriteLine($"Checking for orphaned thumbnails in: {path}...");
+
+    var allFiles = Directory.EnumerateFiles(path, "*.*", SearchOption.AllDirectories).ToList();
+
+    // Build a set of video base names (without extension) for fast lookup
+    var videoBaseNames = allFiles
+        .Where(f => cnf.VideoExtensions.Contains(Path.GetExtension(f).ToLower()))
+        .Select(f => Path.Combine(Path.GetDirectoryName(f)!, Path.GetFileNameWithoutExtension(f)).ToLower())
+        .ToHashSet();
+
+    // Find thumbnail sheets that don't have a corresponding video
+    var thumbnails = allFiles
+        .Where(f => Path.GetExtension(f).Equals(cnf.SheetFileType, StringComparison.OrdinalIgnoreCase));
+
+    int deleted = 0;
+    foreach (var thumb in thumbnails)
+    {
+        string thumbBasePath = Path.Combine(Path.GetDirectoryName(thumb)!, Path.GetFileNameWithoutExtension(thumb)).ToLower();
+
+        if (!videoBaseNames.Contains(thumbBasePath))
+        {
+            File.Delete(thumb);
+            Console.WriteLine($"Deleted orphan: {Path.GetFileName(thumb)}");
+            deleted++;
+        }
+    }
+
+    Console.WriteLine($"Orphaned thumbnails removed: {deleted}\n");
+}
+
+
 async Task ProcessDirectory(string path)
 {
     Console.WriteLine($"Scanning: {path}...");
-
     // Get video files and RANDOMIZE order
     var videoFiles = Directory.EnumerateFiles(path, "*.*", SearchOption.AllDirectories)
         .Where(file => cnf.VideoExtensions.Contains(Path.GetExtension(file).ToLower()))
         .OrderBy(_ => Random.Shared.Next())
         .ToList();
-
     int processed = 0, skipped = 0, errors = 0;
-
+    int current = 0;
+    int total = videoFiles.Count;
     foreach (var videoPath in videoFiles)
     {
+        current++;
         try
         {
             string? dir = Path.GetDirectoryName(videoPath);
             string name = Path.GetFileNameWithoutExtension(videoPath);
             string expectedSheetPath = Path.Combine(dir!, $"{name}{cnf.SheetFileType}");
-
             // CHECK 1: Before processing
             if (File.Exists(expectedSheetPath))
             {
@@ -64,13 +92,12 @@ async Task ProcessDirectory(string path)
                 continue;
             }
 
-            Console.Write($"[{DateTime.Now:HH:mm:ss}] {name}... ");
+            Console.Write($"[{current}/{total}-{current * 100 / total}%] {name}");
             sw.Restart();
 
             using (var sheet = thumbz.CreateThumbnailSheet(videoPath))
             {
                 sw.Stop();
-
                 if (sheet != null)
                 {
                     // CHECK 2: Before saving
@@ -80,7 +107,6 @@ async Task ProcessDirectory(string path)
                         skipped++;
                         continue;
                     }
-
                     await sheet.SaveAsync(expectedSheetPath);
                     Console.WriteLine($"Done ({sw.Elapsed.TotalSeconds:F2}s)");
                     processed++;
@@ -98,7 +124,6 @@ async Task ProcessDirectory(string path)
             errors++;
         }
     }
-
     Console.WriteLine($"\n--- Summary for {path} ---");
     Console.WriteLine($"Created: {processed} | Skipped: {skipped} | Errors: {errors}");
     Console.WriteLine("---------------------------------\n");

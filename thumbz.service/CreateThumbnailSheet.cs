@@ -130,7 +130,13 @@ namespace thumbz.service
 
                     // Header
                     ctx.DrawText(videoFile.Name, titleFont, Color.ParseHex(_cnf.TitleFontColorHex), new PointF(margin, margin));
-                    string details = $"{vidWidth}x{vidHeight} | {mediaInfo.Duration:hh\\:mm\\:ss} | {mediaInfo.PrimaryVideoStream?.CodecName?.ToUpper()}";
+
+                    double fileSizeMB = videoFile.Length / 1024.0 / 1024.0;
+                    string fileSizeStr = fileSizeMB >= 1024
+                        ? $"{fileSizeMB / 1024:F1}GB"
+                        : $"{fileSizeMB:F0}MB";
+                    string details = $"{fileSizeStr} | {vidWidth}x{vidHeight} | {mediaInfo.Duration:hh\\:mm\\:ss} | {mediaInfo.PrimaryVideoStream?.CodecName?.ToUpper()}";
+
                     ctx.DrawText(details, detailFont, Color.ParseHex(_cnf.DetailFontColorHex), new PointF(margin, margin + _cnf.TitleFontSize + 5));
 
                     // Grid with progress
