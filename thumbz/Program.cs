@@ -2,23 +2,28 @@
 using SixLabors.ImageSharp;
 using System.Diagnostics;
 using thumbz.service;
+
 // 1. Validation
 if (!args.Any())
 {
     Console.WriteLine("No paths supplied. Usage: thumbz <path1> <path2>");
     return;
 }
+
 // 2. Load Config
 var configuration = new ConfigurationBuilder()
     .SetBasePath(AppContext.BaseDirectory)
     .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
     .Build();
+
 var cnf = configuration
     .GetSection("AppSettings:ThumbnailSheetConfig")
     .Get<ThumbnailSheetConfig>()!;
+
 // 3. Init Service
 var thumbz = new Thumbz(cnf);
 var sw = new Stopwatch();
+
 // 4. Run
 foreach (string path in args)
 {
@@ -69,15 +74,38 @@ void CleanOrphanedThumbnails(string path)
 async Task ProcessDirectory(string path)
 {
     Console.WriteLine($"Scanning: {path}...");
-    // Get video files and RANDOMIZE order
-    var videoFiles = Directory.EnumerateFiles(path, "*.*", SearchOption.AllDirectories)
+
+    // Get all video files
+    var allVideoFiles = Directory.EnumerateFiles(path, "*.*", SearchOption.AllDirectories)
         .Where(file => cnf.VideoExtensions.Contains(Path.GetExtension(file).ToLower()))
-        .OrderBy(_ => Random.Shared.Next())
         .ToList();
+
+    // Filter to only files that need processing (no existing sheet)
+    var filesToProcess = allVideoFiles
+        .Where(videoPath =>
+        {
+            string? dir = Path.GetDirectoryName(videoPath);
+            string name = Path.GetFileNameWithoutExtension(videoPath);
+            string expectedSheetPath = Path.Combine(dir!, $"{name}{cnf.SheetFileType}");
+            return !File.Exists(expectedSheetPath);
+        })
+        .OrderBy(_ => Random.Shared.Next()) // Randomize
+        .ToList();
+
+    int alreadyExist = allVideoFiles.Count - filesToProcess.Count;
     int processed = 0, skipped = 0, errors = 0;
+    int total = filesToProcess.Count;
+
+    Console.WriteLine($"Found {allVideoFiles.Count} videos: {alreadyExist} already have sheets, {total} to process.\n");
+
+    if (total == 0)
+    {
+        Console.WriteLine("Nothing to do.\n");
+        return;
+    }
+
     int current = 0;
-    int total = videoFiles.Count;
-    foreach (var videoPath in videoFiles)
+    foreach (var videoPath in filesToProcess)
     {
         current++;
         try
@@ -85,14 +113,17 @@ async Task ProcessDirectory(string path)
             string? dir = Path.GetDirectoryName(videoPath);
             string name = Path.GetFileNameWithoutExtension(videoPath);
             string expectedSheetPath = Path.Combine(dir!, $"{name}{cnf.SheetFileType}");
-            // CHECK 1: Before processing
+
+            // Double-check in case another process created it
             if (File.Exists(expectedSheetPath))
             {
+                Console.WriteLine($"[{current}/{total} - {current * 100 / total}%] {name}");
+                Console.WriteLine("  Skipped (already exists)\n");
                 skipped++;
                 continue;
             }
 
-            Console.Write($"[{current}/{total}-{current * 100 / total}%] {name}");
+            Console.WriteLine($"[{current}/{total} - {current * 100 / total}%] {name}");
             sw.Restart();
 
             using (var sheet = thumbz.CreateThumbnailSheet(videoPath))
@@ -100,31 +131,32 @@ async Task ProcessDirectory(string path)
                 sw.Stop();
                 if (sheet != null)
                 {
-                    // CHECK 2: Before saving
+                    // CHECK 2: Before saving (race condition guard)
                     if (File.Exists(expectedSheetPath))
                     {
-                        Console.WriteLine($"Skipped (already created)");
+                        Console.WriteLine("  Skipped (created by another process)\n");
                         skipped++;
                         continue;
                     }
                     await sheet.SaveAsync(expectedSheetPath);
-                    Console.WriteLine($"Done ({sw.Elapsed.TotalSeconds:F2}s)");
+                    Console.WriteLine($"  Saved ({sw.Elapsed.TotalSeconds:F2}s)\n");
                     processed++;
                 }
                 else
                 {
-                    Console.WriteLine("Failed (Null Output)");
+                    Console.WriteLine("  Failed (Null Output)\n");
                     errors++;
                 }
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error: {ex.Message}");
+            Console.WriteLine($"  Error: {ex.Message}\n");
             errors++;
         }
     }
-    Console.WriteLine($"\n--- Summary for {path} ---");
-    Console.WriteLine($"Created: {processed} | Skipped: {skipped} | Errors: {errors}");
+
+    Console.WriteLine($"--- Summary for {path} ---");
+    Console.WriteLine($"Created: {processed} | Skipped: {skipped + alreadyExist} | Errors: {errors}");
     Console.WriteLine("---------------------------------\n");
 }

@@ -36,7 +36,7 @@ namespace thumbz.service
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Probe Failed] {ex.Message}");
+                Console.WriteLine($"  [Probe Failed] {ex.Message}");
                 return null!;
             }
 
@@ -103,8 +103,7 @@ namespace thumbz.service
                     RedirectStandardOutput = true
                 };
 
-                // Show extracting status
-                Console.Write("Extracting... ");
+                Console.WriteLine("  Extracting frames...");
 
                 using (var proc = new Process { StartInfo = psi })
                 {
@@ -114,13 +113,13 @@ namespace thumbz.service
 
                     if (proc.ExitCode != 0)
                     {
-                        Console.WriteLine($"\n[FFmpeg Error] ExitCode: {proc.ExitCode}");
-                        Console.WriteLine(errorLog);
+                        Console.WriteLine($"  [FFmpeg Error] ExitCode: {proc.ExitCode}");
+                        Console.WriteLine($"  {errorLog}");
                         return null!;
                     }
                 }
 
-                Console.WriteLine("OK");
+                Console.WriteLine("  Compositing sheet...");
 
                 // --- Composite ---
                 var sheet = new Image<Rgba32>(sheetWidth, sheetHeight);
@@ -139,7 +138,7 @@ namespace thumbz.service
 
                     ctx.DrawText(details, detailFont, Color.ParseHex(_cnf.DetailFontColorHex), new PointF(margin, margin + _cnf.TitleFontSize + 5));
 
-                    // Grid with progress
+                    // Grid
                     int drawnCount = 0;
                     for (int i = 0; i < totalFrames; i++)
                     {
@@ -163,15 +162,9 @@ namespace thumbz.service
                         var ts = TimeSpan.FromSeconds(skipSeconds + (interval * (i + 1)));
                         DrawTimestamp(ctx, ts, timestampFont, x, y, thumbWidth, thumbHeight);
                         drawnCount++;
-
-                        // Update progress bar
-                        DrawProgressBar(i + 1, totalFrames);
                     }
 
-                    // Clear progress line and move to next line
-                    Console.Write("\r" + new string(' ', 50) + "\r");
-
-                    if (drawnCount == 0) Console.WriteLine("[Warning] FFmpeg ran, but no images were drawn.");
+                    if (drawnCount == 0) Console.WriteLine("  [Warning] FFmpeg ran, but no images were drawn.");
                 });
 
                 return sheet;
@@ -180,18 +173,6 @@ namespace thumbz.service
             {
                 try { Directory.Delete(tempDir, true); } catch { }
             }
-        }
-
-        private void DrawProgressBar(int current, int total, int barWidth = 30)
-        {
-            //double percent = (double)current / total;
-            //int filled = (int)(barWidth * percent);
-            //int empty = barWidth - filled;
-
-            //string bar = new string('█', filled) + new string('░', empty);
-            //string text = $"\rCompositing: [{bar}] {percent * 100:F0}% ({current}/{total})";
-
-            //Console.Write(text);
         }
 
         private void DrawTimestamp(IImageProcessingContext ctx, TimeSpan ts, Font font, int x, int y, int w, int h)
