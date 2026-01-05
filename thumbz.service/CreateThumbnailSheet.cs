@@ -48,6 +48,7 @@ namespace thumbz.service
             int cols = _cnf.ThumbnailsDimension.ThumbnailsHorizontal;
             int rows = _cnf.ThumbnailsDimension.ThumbnailsVertical;
             int totalFrames = cols * rows;
+            int framesToExtract = totalFrames + 2; // Extract 2 extra to skip first and last
 
             int sheetWidth = _cnf.FinalSheetWidthPx;
             int margin = _cnf.SheetMarginPx;
@@ -66,37 +67,19 @@ namespace thumbz.service
             int headerHeight = _cnf.TitleFontSize + _cnf.DetailFontSize + 10;
             int sheetHeight = (2 * margin) + headerHeight + (rows * thumbHeight) + ((rows - 1) * padding);
 
-            // --- Timestamps ---
-            var skipSeconds = mediaInfo.Duration.TotalSeconds * _cnf.VideoStartSkipInLengthPercentage;
-            var effectiveDuration = mediaInfo.Duration.TotalSeconds - (2 * skipSeconds);
-            var interval = effectiveDuration / (totalFrames + 1);
-
             // --- FAST EXTRACTION ---
             string tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
             Directory.CreateDirectory(tempDir);
 
             try
             {
-                var cmdBuilder = new StringBuilder();
-
-                // 1. INPUTS: Add the file N times with different seek points
-                for (int i = 0; i < totalFrames; i++)
-                {
-                    var ts = TimeSpan.FromSeconds(skipSeconds + (interval * (i + 1)));
-                    cmdBuilder.Append($"-ss {ts.TotalSeconds:F3} -i \"{videoPath}\" ");
-                }
-
-                // 2. OUTPUTS: Map specific inputs to specific files
-                for (int i = 0; i < totalFrames; i++)
-                {
-                    string outFile = Path.Combine(tempDir, $"{i}.jpg");
-                    cmdBuilder.Append($"-map {i}:v:0 -frames:v 1 -vf scale={thumbWidth}:{thumbHeight} \"{outFile}\" ");
-                }
+                // Calculate FPS to extract the desired number of frames
+                double fps = framesToExtract / mediaInfo.Duration.TotalSeconds;
 
                 var psi = new ProcessStartInfo
                 {
                     FileName = Path.Combine(_cnf.ffmpeg, "ffmpeg.exe"),
-                    Arguments = cmdBuilder.ToString() + " -y",
+                    Arguments = $"-i \"{videoPath}\" -vf \"fps={fps:F6},scale={thumbWidth}:{thumbHeight},format=yuvj420p\" -fps_mode vfr -q:v 25 \"{Path.Combine(tempDir, "frame_%04d.jpg")}\" -y",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardError = true,
@@ -121,6 +104,21 @@ namespace thumbz.service
 
                 Console.WriteLine("  Compositing sheet...");
 
+                // Get extracted frames (skip first and last)
+                var frameFiles = Directory.GetFiles(tempDir, "frame_*.jpg")
+                    .OrderBy(f => f)
+                    .Skip(1) // Skip first
+                    .Take(totalFrames) // Take only what we need
+                    .ToList();
+
+                if (frameFiles.Count < totalFrames)
+                {
+                    Console.WriteLine($"  [Warning] Only {frameFiles.Count} frames extracted, expected {totalFrames}");
+                }
+
+                // Calculate time interval for timestamps
+                double interval = mediaInfo.Duration.TotalSeconds / (framesToExtract - 1);
+
                 // --- Composite ---
                 var sheet = new Image<Rgba32>(sheetWidth, sheetHeight);
                 sheet.Mutate(ctx =>
@@ -139,32 +137,22 @@ namespace thumbz.service
                     ctx.DrawText(details, detailFont, Color.ParseHex(_cnf.DetailFontColorHex), new PointF(margin, margin + _cnf.TitleFontSize + 5));
 
                     // Grid
-                    int drawnCount = 0;
-                    for (int i = 0; i < totalFrames; i++)
+                    for (int i = 0; i < frameFiles.Count; i++)
                     {
-                        string framePath = Path.Combine(tempDir, $"{i}.jpg");
-
-                        if (!File.Exists(framePath))
-                        {
-                            continue;
-                        }
-
                         int row = i / cols;
                         int col = i % cols;
                         int x = margin + (col * (thumbWidth + padding));
                         int y = margin + headerHeight + (row * (thumbHeight + padding));
 
-                        using (var img = Image.Load(framePath))
+                        using (var img = Image.Load(frameFiles[i]))
                         {
                             ctx.DrawImage(img, new Point(x, y), 1f);
                         }
 
-                        var ts = TimeSpan.FromSeconds(skipSeconds + (interval * (i + 1)));
+                        // Calculate timestamp for this frame (accounting for skipped first frame)
+                        var ts = TimeSpan.FromSeconds(interval * (i + 1));
                         DrawTimestamp(ctx, ts, timestampFont, x, y, thumbWidth, thumbHeight);
-                        drawnCount++;
                     }
-
-                    if (drawnCount == 0) Console.WriteLine("  [Warning] FFmpeg ran, but no images were drawn.");
                 });
 
                 return sheet;
