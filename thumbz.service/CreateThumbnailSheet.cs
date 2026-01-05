@@ -83,7 +83,7 @@ namespace thumbz.service
                 var psi = new ProcessStartInfo
                 {
                     FileName = Path.Combine(_cnf.ffmpeg, "ffmpeg.exe"),
-                    Arguments = $"-i \"{videoPath}\" -vf \"fps={fps:F6},scale={thumbWidth}:{thumbHeight},format=yuvj420p\" -fps_mode vfr -q:v 25 \"{Path.Combine(tempDir, "frame_%04d.jpg")}\" -y",
+                    Arguments = $"-i \"{videoPath}\" -vf \"fps={fps:F6},scale={thumbWidth}:{thumbHeight},format=yuvj420p\" -fps_mode vfr -q:v 8 \"{Path.Combine(tempDir, "frame_%04d.jpg")}\" -y",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardError = true,
