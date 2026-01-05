@@ -72,7 +72,7 @@ namespace thumbz.service
             CleanupTempDirectories(tempDirPrefx);
 
 
-            string tempDir = Path.Combine(Path.GetTempPath(), "__" + Guid.NewGuid().ToString());
+            string tempDir = Path.Combine(Path.GetTempPath(), tempDirPrefx + Guid.NewGuid().ToString());
             Directory.CreateDirectory(tempDir);
 
             try
