@@ -68,7 +68,7 @@ namespace thumbz.service
             int sheetHeight = (2 * margin) + headerHeight + (rows * thumbHeight) + ((rows - 1) * padding);
 
             // --- FAST EXTRACTION ---
-            string tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+            string tempDir = Path.Combine(Path.GetTempPath(), "__" + Guid.NewGuid().ToString());
             Directory.CreateDirectory(tempDir);
 
             try
