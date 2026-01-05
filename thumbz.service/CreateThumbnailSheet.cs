@@ -68,6 +68,10 @@ namespace thumbz.service
             int sheetHeight = (2 * margin) + headerHeight + (rows * thumbHeight) + ((rows - 1) * padding);
 
             // --- FAST EXTRACTION ---
+            string tempDirPrefx = "__aa__";
+            CleanupTempDirectories(tempDirPrefx);
+
+
             string tempDir = Path.Combine(Path.GetTempPath(), "__" + Guid.NewGuid().ToString());
             Directory.CreateDirectory(tempDir);
 
@@ -174,5 +178,31 @@ namespace thumbz.service
             ctx.Fill(Color.ParseHex("#000000").WithAlpha(0.7f), new RectangleF(bx, by, textSize.Width + p * 2, textSize.Height + p * 2));
             ctx.DrawText(text, font, Color.White, new PointF(bx + p - 4, by + p - 4));
         }
+
+
+        // In your cleanup routine or before starting
+        public static void CleanupTempDirectories(string tempDirPrefix)
+        {
+            string tempPath = Path.GetTempPath();
+
+            var dirsToDelete = Directory.GetDirectories(tempPath, $"{tempDirPrefix}*");
+
+            foreach (var dir in dirsToDelete)
+            {
+                try
+                {
+                    Directory.Delete(dir, true);
+                }
+                catch
+                {
+                    // Ignore failures - might be in use
+                }
+            }
+        }
+
+
+
+
+
     }
 }
