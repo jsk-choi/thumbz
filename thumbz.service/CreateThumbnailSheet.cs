@@ -5,7 +5,6 @@ using SixLabors.ImageSharp.Drawing.Processing;
 using SixLabors.Fonts;
 using FFMpegCore;
 using System.Diagnostics;
-using System.Text;
 
 namespace thumbz.service
 {
@@ -71,53 +70,36 @@ namespace thumbz.service
             var effectiveDuration = mediaInfo.Duration.TotalSeconds - (2 * skipSeconds);
             var interval = effectiveDuration / (totalFrames + 1);
 
-            // --- FAST EXTRACTION ---
-            string tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+            // --- FRAME EXTRACTION ---
+            CleanupTemp();
+            string tempDir = Path.Combine(Path.GetTempPath(), $"___aa__{Guid.NewGuid()}");
             Directory.CreateDirectory(tempDir);
 
             try
             {
-                var cmdBuilder = new StringBuilder();
+                Console.WriteLine("  Extracting frames...");
+                string ffmpegPath = Path.Combine(_cnf.ffmpeg, "ffmpeg.exe");
 
-                // 1. INPUTS: Add the file N times with different seek points
                 for (int i = 0; i < totalFrames; i++)
                 {
                     var ts = TimeSpan.FromSeconds(skipSeconds + (interval * (i + 1)));
-                    cmdBuilder.Append($"-ss {ts.TotalSeconds:F3} -i \"{videoPath}\" ");
-                }
-
-                // 2. OUTPUTS: Map specific inputs to specific files
-                for (int i = 0; i < totalFrames; i++)
-                {
                     string outFile = Path.Combine(tempDir, $"{i}.jpg");
-                    cmdBuilder.Append($"-map {i}:v:0 -frames:v 1 -vf scale={thumbWidth}:{thumbHeight} \"{outFile}\" ");
-                }
 
-                var psi = new ProcessStartInfo
-                {
-                    FileName = Path.Combine(_cnf.ffmpeg, "ffmpeg.exe"),
-                    Arguments = cmdBuilder.ToString() + " -y",
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardError = true,
-                    RedirectStandardOutput = true
-                };
-
-                Console.WriteLine("  Extracting frames...");
-
-                using (var proc = new Process { StartInfo = psi })
-                {
-                    proc.Start();
-                    string errorLog = proc.StandardError.ReadToEnd();
-                    proc.WaitForExit();
-
-                    if (proc.ExitCode != 0)
+                    var psi = new ProcessStartInfo
                     {
-                        Console.WriteLine($"  [FFmpeg Error] ExitCode: {proc.ExitCode}");
-                        Console.WriteLine($"  {errorLog}");
-                        return null!;
-                    }
+                        FileName = ffmpegPath,
+                        Arguments = $"-loglevel quiet -ss {ts:hh\\:mm\\:ss\\.fff} -i \"{videoPath}\" -frames:v 1 -vf scale={thumbWidth}:{thumbHeight} -q:v 2 \"{outFile}\"",
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+
+                    using var proc = Process.Start(psi);
+                    proc?.WaitForExit();
+
+                    int pct = (int)((i + 1) / (double)totalFrames * 100);
+                    Console.Write($"\r  Extracting frames: [{new string('#', pct / 5)}{new string('-', 20 - pct / 5)}] {pct,3}% ({i + 1}/{totalFrames})");
                 }
+                Console.WriteLine();
 
                 Console.WriteLine("  Compositing sheet...");
 
@@ -185,6 +167,19 @@ namespace thumbz.service
 
             ctx.Fill(Color.ParseHex("#000000").WithAlpha(0.7f), new RectangleF(bx, by, textSize.Width + p * 2, textSize.Height + p * 2));
             ctx.DrawText(text, font, Color.White, new PointF(bx + p - 4, by + p - 4));
+        }
+
+        private void CleanupTemp()
+        {
+            string tempPrefix = "___aa__";
+            try
+            {
+                foreach (var dir in Directory.GetDirectories(Path.GetTempPath(), $"{tempPrefix}*"))
+                {
+                    try { Directory.Delete(dir, true); } catch { }
+                }
+            }
+            catch { }
         }
     }
 }

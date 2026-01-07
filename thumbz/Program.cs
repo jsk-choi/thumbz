@@ -29,7 +29,7 @@ foreach (string path in args)
 {
     if (Directory.Exists(path))
     {
-        // CleanOrphanedThumbnails(path);
+        CleanOrphanedThumbnails(path);
         await ProcessDirectory(path);
     }
     else
