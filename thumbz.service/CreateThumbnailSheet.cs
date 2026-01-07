@@ -71,30 +71,40 @@ namespace thumbz.service
             var interval = effectiveDuration / (totalFrames + 1);
 
             // --- FRAME EXTRACTION ---
-            CleanupTemp();
-            string tempDir = Path.Combine(Path.GetTempPath(), $"___aa__{Guid.NewGuid()}");
-            Directory.CreateDirectory(tempDir);
+            //CleanupTemp();
 
             try
             {
                 Console.WriteLine("  Extracting frames...");
                 string ffmpegPath = Path.Combine(_cnf.ffmpeg, "ffmpeg.exe");
+                var frames = new List<Image<Rgba32>>();
 
                 for (int i = 0; i < totalFrames; i++)
                 {
                     var ts = TimeSpan.FromSeconds(skipSeconds + (interval * (i + 1)));
-                    string outFile = Path.Combine(tempDir, $"{i}.jpg");
 
                     var psi = new ProcessStartInfo
                     {
                         FileName = ffmpegPath,
-                        Arguments = $"-loglevel quiet -ss {ts:hh\\:mm\\:ss\\.fff} -i \"{videoPath}\" -frames:v 1 -vf scale={thumbWidth}:{thumbHeight} -q:v 2 \"{outFile}\"",
+                        Arguments = $"-loglevel quiet -ss {ts:hh\\:mm\\:ss\\.fff} -i \"{videoPath}\" -frames:v 1 -vf scale={thumbWidth}:{thumbHeight} -f image2pipe -vcodec mjpeg -",
                         UseShellExecute = false,
-                        CreateNoWindow = true
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true
                     };
 
                     using var proc = Process.Start(psi);
-                    proc?.WaitForExit();
+                    if (proc != null)
+                    {
+                        using var ms = new MemoryStream();
+                        proc.StandardOutput.BaseStream.CopyTo(ms);
+                        proc.WaitForExit();
+
+                        if (ms.Length > 0)
+                        {
+                            ms.Position = 0;
+                            frames.Add(Image.Load<Rgba32>(ms));
+                        }
+                    }
 
                     int pct = (int)((i + 1) / (double)totalFrames * 100);
                     Console.Write($"\r  Extracting frames: [{new string('#', pct / 5)}{new string('-', 20 - pct / 5)}] {pct,3}% ({i + 1}/{totalFrames})");
@@ -121,39 +131,30 @@ namespace thumbz.service
                     ctx.DrawText(details, detailFont, Color.ParseHex(_cnf.DetailFontColorHex), new PointF(margin, margin + _cnf.TitleFontSize + 5));
 
                     // Grid
-                    int drawnCount = 0;
-                    for (int i = 0; i < totalFrames; i++)
+                    for (int i = 0; i < frames.Count; i++)
                     {
-                        string framePath = Path.Combine(tempDir, $"{i}.jpg");
-
-                        if (!File.Exists(framePath))
-                        {
-                            continue;
-                        }
-
                         int row = i / cols;
                         int col = i % cols;
                         int x = margin + (col * (thumbWidth + padding));
                         int y = margin + headerHeight + (row * (thumbHeight + padding));
 
-                        using (var img = Image.Load(framePath))
-                        {
-                            ctx.DrawImage(img, new Point(x, y), 1f);
-                        }
+                        ctx.DrawImage(frames[i], new Point(x, y), 1f);
 
                         var ts = TimeSpan.FromSeconds(skipSeconds + (interval * (i + 1)));
                         DrawTimestamp(ctx, ts, timestampFont, x, y, thumbWidth, thumbHeight);
-                        drawnCount++;
                     }
 
-                    if (drawnCount == 0) Console.WriteLine("  [Warning] FFmpeg ran, but no images were drawn.");
+                    if (frames.Count == 0) Console.WriteLine("  [Warning] FFmpeg ran, but no images were drawn.");
                 });
+
+                // Dispose frames
+                foreach (var frame in frames) frame.Dispose();
 
                 return sheet;
             }
-            finally
+            catch
             {
-                try { Directory.Delete(tempDir, true); } catch { }
+                throw;
             }
         }
 
