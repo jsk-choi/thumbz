@@ -47,7 +47,6 @@ namespace thumbz.service
             int cols = _cnf.ThumbnailsDimension.ThumbnailsHorizontal;
             int rows = _cnf.ThumbnailsDimension.ThumbnailsVertical;
             int totalFrames = cols * rows;
-            int framesToExtract = totalFrames + 2; // Extract 2 extra to skip first and last
 
             int sheetWidth = _cnf.FinalSheetWidthPx;
             int margin = _cnf.SheetMarginPx;
@@ -104,21 +103,6 @@ namespace thumbz.service
 
                 Console.WriteLine("  Compositing sheet...");
 
-                // Get extracted frames (skip first and last)
-                var frameFiles = Directory.GetFiles(tempDir, "frame_*.jpg")
-                    .OrderBy(f => f)
-                    .Skip(1) // Skip first
-                    .Take(totalFrames) // Take only what we need
-                    .ToList();
-
-                if (frameFiles.Count < totalFrames)
-                {
-                    Console.WriteLine($"  [Warning] Only {frameFiles.Count} frames extracted, expected {totalFrames}");
-                }
-
-                // Calculate time interval for timestamps
-                double interval = mediaInfo.Duration.TotalSeconds / (framesToExtract - 1);
-
                 // --- Composite ---
                 var sheet = new Image<Rgba32>(sheetWidth, sheetHeight);
                 sheet.Mutate(ctx =>
@@ -137,22 +121,32 @@ namespace thumbz.service
                     ctx.DrawText(details, detailFont, Color.ParseHex(_cnf.DetailFontColorHex), new PointF(margin, margin + _cnf.TitleFontSize + 5));
 
                     // Grid
-                    for (int i = 0; i < frameFiles.Count; i++)
+                    int drawnCount = 0;
+                    for (int i = 0; i < totalFrames; i++)
                     {
+                        string framePath = Path.Combine(tempDir, $"{i}.jpg");
+
+                        if (!File.Exists(framePath))
+                        {
+                            continue;
+                        }
+
                         int row = i / cols;
                         int col = i % cols;
                         int x = margin + (col * (thumbWidth + padding));
                         int y = margin + headerHeight + (row * (thumbHeight + padding));
 
-                        using (var img = Image.Load(frameFiles[i]))
+                        using (var img = Image.Load(framePath))
                         {
                             ctx.DrawImage(img, new Point(x, y), 1f);
                         }
 
-                        // Calculate timestamp for this frame (accounting for skipped first frame)
-                        var ts = TimeSpan.FromSeconds(interval * (i + 1));
+                        var ts = TimeSpan.FromSeconds(skipSeconds + (interval * (i + 1)));
                         DrawTimestamp(ctx, ts, timestampFont, x, y, thumbWidth, thumbHeight);
+                        drawnCount++;
                     }
+
+                    if (drawnCount == 0) Console.WriteLine("  [Warning] FFmpeg ran, but no images were drawn.");
                 });
 
                 return sheet;
