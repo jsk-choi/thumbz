@@ -75,7 +75,6 @@ namespace thumbz.service
 
             try
             {
-                Console.WriteLine("  Extracting frames...");
                 string ffmpegPath = Path.Combine(_cnf.ffmpeg, "ffmpeg.exe");
                 var frames = new List<Image<Rgba32>>();
 
@@ -107,11 +106,9 @@ namespace thumbz.service
                     }
 
                     int pct = (int)((i + 1) / (double)totalFrames * 100);
-                    Console.Write($"\r  Extracting frames: [{new string('#', pct / 5)}{new string('-', 20 - pct / 5)}] {pct,3}% ({i + 1}/{totalFrames})");
+                    Console.Write($"\r  [{new string('#', pct / 5)}{new string('-', 20 - pct / 5)}] {pct,3}% ({i + 1}/{totalFrames})");
                 }
                 Console.WriteLine();
-
-                Console.WriteLine("  Compositing sheet...");
 
                 // --- Composite ---
                 var sheet = new Image<Rgba32>(sheetWidth, sheetHeight);
