@@ -25,6 +25,17 @@ var thumbz = new Thumbz(cnf);
 var sw = new Stopwatch();
 
 // 4. Run
+// Check for --filelist mode (used by spawned parallel processes)
+if (args.Length == 2 && args[0] == "--filelist" && File.Exists(args[1]))
+{
+    var files = File.ReadAllLines(args[1])
+        .Where(f => !string.IsNullOrWhiteSpace(f))
+        .OrderBy(_ => Random.Shared.Next()) // Re-randomize per process
+        .ToList();
+    await ProcessFileList(files, 1, 1);
+    return;
+}
+
 foreach (string path in args)
 {
     if (Directory.Exists(path))
@@ -124,28 +135,24 @@ async Task ProcessDirectoryWithParallelization(string path)
 void SpawnParallelProcesses(List<string> files)
 {
     int processCount = 4;
-    int filesPerProcess = (int)Math.Ceiling((double)files.Count / processCount);
-
     string exePath = Process.GetCurrentProcess().MainModule!.FileName;
+
+    // Write all files to a temp list file (avoids command line length limits)
+    string fileListPath = Path.Combine(Path.GetTempPath(), $"thumbz_filelist_{Guid.NewGuid():N}.txt");
+    File.WriteAllLines(fileListPath, files);
 
     for (int i = 0; i < processCount; i++)
     {
-        var batch = files.Skip(i * filesPerProcess).Take(filesPerProcess).ToList();
-        if (!batch.Any()) continue;
-
-        // Escape and quote file paths for command line
-        string fileArgs = string.Join(" ", batch.Select(f => $"\"{f}\""));
-
         var startInfo = new ProcessStartInfo
         {
             FileName = "cmd.exe",
-            Arguments = $"/k title \"Thumbz Process {i + 1}/{processCount}\" && \"{exePath}\" {fileArgs}",
+            Arguments = $"/c title \"Thumbz Process {i + 1}/{processCount}\" && \"{exePath}\" --filelist \"{fileListPath}\"",
             UseShellExecute = true,
             CreateNoWindow = false
         };
 
         Process.Start(startInfo);
-        Console.WriteLine($"Process {i + 1}/{processCount}: {batch.Count} files");
+        Console.WriteLine($"Process {i + 1}/{processCount}: {files.Count} files (shared queue)");
     }
 }
 
@@ -255,10 +262,4 @@ async Task ProcessFileList(List<string> filesToProcess, int batchNumber, int tot
     Console.WriteLine($"--- Summary{batchInfo} ---");
     Console.WriteLine($"Created: {processed} | Skipped: {skipped} | Errors: {errors}");
     Console.WriteLine("---------------------------------\n");
-
-    if (totalBatches > 1)
-    {
-        Console.WriteLine("Press any key to close this window...");
-        Console.ReadKey();
-    }
 }
