@@ -6,7 +6,17 @@ using thumbz.service;
 // 1. Validation
 if (!args.Any())
 {
-    Console.WriteLine("No paths supplied. Usage: thumbz <path1> <path2>");
+    Console.WriteLine("No paths supplied. Usage: thumbz [--skip] <path1> <path2>");
+    return;
+}
+
+// Check for --skip flag
+bool skipOrphanCleanup = args.Contains("--skip", StringComparer.OrdinalIgnoreCase);
+var paths = args.Where(a => !a.Equals("--skip", StringComparison.OrdinalIgnoreCase)).ToArray();
+
+if (!paths.Any())
+{
+    Console.WriteLine("No paths supplied. Usage: thumbz [--skip] <path1> <path2>");
     return;
 }
 
@@ -36,11 +46,15 @@ if (args.Length == 2 && args[0] == "--filelist" && File.Exists(args[1]))
     return;
 }
 
-foreach (string path in args)
+foreach (string path in paths)
 {
     if (Directory.Exists(path))
     {
-        CleanOrphanedThumbnails(path);
+        if (!skipOrphanCleanup)
+            CleanOrphanedThumbnails(path);
+        else
+            Console.WriteLine("Skipping orphaned thumbnail cleanup (--skip).\n");
+
         await ProcessDirectoryWithParallelization(path);
     }
     else if (File.Exists(path))
