@@ -5,6 +5,7 @@ using SixLabors.ImageSharp.Drawing.Processing;
 using SixLabors.Fonts;
 using FFMpegCore;
 using System.Diagnostics;
+using System.Globalization;
 
 namespace thumbz.service
 {
@@ -71,44 +72,67 @@ namespace thumbz.service
             var interval = effectiveDuration / (totalFrames + 1);
 
             // --- FRAME EXTRACTION ---
-            //CleanupTemp();
+            // One ffmpeg process with N fast-seek inputs -> N scaled JPEG frames in a temp dir.
+            // Fast-seek (-ss before -i) decodes ~one frame per input, so no full-file decode;
+            // doing it in a single process avoids the per-frame process-spawn overhead.
+            string tempDir = Path.Combine(Path.GetTempPath(), "thumbz_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
 
             try
             {
                 string ffmpegPath = Path.Combine(_cnf.ffmpeg, "ffmpeg.exe");
                 var frames = new List<Image<Rgba32>>();
+                var framePaths = new string[totalFrames];
 
+                var ffArgs = new List<string> { "-y", "-loglevel", "error" };
+
+                // One fast-seek input per frame.
                 for (int i = 0; i < totalFrames; i++)
                 {
                     var ts = TimeSpan.FromSeconds(skipSeconds + (interval * (i + 1)));
-
-                    var psi = new ProcessStartInfo
-                    {
-                        FileName = ffmpegPath,
-                        Arguments = $"-loglevel quiet -ss {ts:hh\\:mm\\:ss\\.fff} -i \"{videoPath}\" -frames:v 1 -vf scale={thumbWidth}:{thumbHeight} -f image2pipe -vcodec mjpeg -",
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        RedirectStandardOutput = true
-                    };
-
-                    using var proc = Process.Start(psi);
-                    if (proc != null)
-                    {
-                        using var ms = new MemoryStream();
-                        proc.StandardOutput.BaseStream.CopyTo(ms);
-                        proc.WaitForExit();
-
-                        if (ms.Length > 0)
-                        {
-                            ms.Position = 0;
-                            frames.Add(Image.Load<Rgba32>(ms));
-                        }
-                    }
-
-                    int pct = (int)((i + 1) / (double)totalFrames * 100);
-                    Console.Write($"\r  [{new string('#', pct / 5)}{new string('-', 20 - pct / 5)}] {pct,3}% ({i + 1}/{totalFrames})");
+                    ffArgs.Add("-ss");
+                    ffArgs.Add(ts.ToString(@"hh\:mm\:ss\.fff", CultureInfo.InvariantCulture));
+                    ffArgs.Add("-i");
+                    ffArgs.Add(videoPath);
                 }
-                Console.WriteLine();
+
+                // One scaled output per input. format=yuvj420p converts limited-range
+                // yuv420p sources to the full-range pixel format the JPEG encoder requires.
+                for (int i = 0; i < totalFrames; i++)
+                {
+                    framePaths[i] = Path.Combine(tempDir, $"f_{i:D4}.jpg");
+                    ffArgs.Add("-map");
+                    ffArgs.Add($"{i}:v:0");
+                    ffArgs.Add("-vf");
+                    ffArgs.Add($"scale={thumbWidth}:{thumbHeight},format=yuvj420p");
+                    ffArgs.Add("-frames:v");
+                    ffArgs.Add("1");
+                    ffArgs.Add(framePaths[i]);
+                }
+
+                var psi = new ProcessStartInfo
+                {
+                    FileName = ffmpegPath,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardError = true
+                };
+                foreach (var a in ffArgs) psi.ArgumentList.Add(a);
+
+                using (var proc = Process.Start(psi))
+                {
+                    string err = proc!.StandardError.ReadToEnd();
+                    proc.WaitForExit();
+                    if (proc.ExitCode != 0 && !string.IsNullOrWhiteSpace(err))
+                        Console.WriteLine($"  [ffmpeg] {err.Trim().Split('\n')[0]}");
+                }
+
+                // Load frames in order; skip any that failed to render (e.g. seek past EOF).
+                for (int i = 0; i < totalFrames; i++)
+                {
+                    if (File.Exists(framePaths[i]) && new FileInfo(framePaths[i]).Length > 0)
+                        frames.Add(Image.Load<Rgba32>(framePaths[i]));
+                }
 
                 // --- Composite ---
                 var sheet = new Image<Rgba32>(sheetWidth, sheetHeight);
@@ -149,9 +173,9 @@ namespace thumbz.service
 
                 return sheet;
             }
-            catch
+            finally
             {
-                throw;
+                try { Directory.Delete(tempDir, true); } catch { }
             }
         }
 
