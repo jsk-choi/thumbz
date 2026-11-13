@@ -43,6 +43,14 @@ namespace thumbz.service
             // --- Layout Calculations ---
             double vidWidth = mediaInfo.PrimaryVideoStream?.Width ?? 1920;
             double vidHeight = mediaInfo.PrimaryVideoStream?.Height ?? 1080;
+
+            // Phone videos are often stored landscape with a 90/270 rotation tag. ffmpeg auto-rotates
+            // the frames it extracts, so lay the sheet out using the displayed (rotated) dimensions.
+            int rotation = mediaInfo.PrimaryVideoStream?.Rotation ?? 0;
+            if (Math.Abs(rotation) % 180 == 90)
+            {
+                (vidWidth, vidHeight) = (vidHeight, vidWidth);
+            }
             // Local, not _cnf.* — this method runs concurrently across videos, so writing
             // the chosen dimension back onto the shared config would be a data race.
             var dim = vidHeight > (vidWidth * 1.1) ? _cnf.VerticalVideo : _cnf.HorizontalVideo;
@@ -56,9 +64,12 @@ namespace thumbz.service
             int padding = _cnf.ThumbnailPaddingPx;
 
             int availableWidth = sheetWidth - (2 * margin) - ((cols - 1) * padding);
+            // Even dimensions: 4:2:0 chroma subsampling (yuvj420p) needs them
             int thumbWidth = availableWidth / cols;
+            thumbWidth -= thumbWidth % 2;
             double aspectRatio = vidHeight / vidWidth;
             int thumbHeight = (int)(thumbWidth * aspectRatio);
+            thumbHeight -= thumbHeight % 2;
 
             // Fonts & Colors
             var titleFont = SystemFonts.CreateFont(_cnf.TitleFontFamily, _cnf.TitleFontSize);
@@ -83,7 +94,9 @@ namespace thumbz.service
             try
             {
                 string ffmpegPath = Path.Combine(_cnf.ffmpeg, "ffmpeg.exe");
-                var frames = new List<Image<Rgba32>>();
+                // Each frame keeps its original slot index, so its timestamp stays right even if
+                // an earlier frame failed to render.
+                var frames = new List<(int Index, Image<Rgba32> Image)>();
                 var framePaths = new string[totalFrames];
 
                 var ffArgs = new List<string> { "-y", "-loglevel", "error" };
@@ -133,7 +146,7 @@ namespace thumbz.service
                 for (int i = 0; i < totalFrames; i++)
                 {
                     if (File.Exists(framePaths[i]) && new FileInfo(framePaths[i]).Length > 0)
-                        frames.Add(Image.Load<Rgba32>(framePaths[i]));
+                        frames.Add((i, Image.Load<Rgba32>(framePaths[i])));
                 }
 
                 // --- Composite ---
@@ -161,9 +174,9 @@ namespace thumbz.service
                         int x = margin + (col * (thumbWidth + padding));
                         int y = margin + headerHeight + (row * (thumbHeight + padding));
 
-                        ctx.DrawImage(frames[i], new Point(x, y), 1f);
+                        ctx.DrawImage(frames[i].Image, new Point(x, y), 1f);
 
-                        var ts = TimeSpan.FromSeconds(skipSeconds + (interval * (i + 1)));
+                        var ts = TimeSpan.FromSeconds(skipSeconds + (interval * (frames[i].Index + 1)));
                         DrawTimestamp(ctx, ts, timestampFont, x, y, thumbWidth, thumbHeight);
                     }
 
@@ -171,7 +184,7 @@ namespace thumbz.service
                 });
 
                 // Dispose frames
-                foreach (var frame in frames) frame.Dispose();
+                foreach (var frame in frames) frame.Image.Dispose();
 
                 return sheet;
             }
@@ -191,19 +204,6 @@ namespace thumbz.service
 
             ctx.Fill(Color.ParseHex("#000000").WithAlpha(0.7f), new RectangleF(bx, by, textSize.Width + p * 2, textSize.Height + p * 2));
             ctx.DrawText(text, font, Color.White, new PointF(bx + p - 4, by + p - 4));
-        }
-
-        private void CleanupTemp()
-        {
-            string tempPrefix = "___aa__";
-            try
-            {
-                foreach (var dir in Directory.GetDirectories(Path.GetTempPath(), $"{tempPrefix}*"))
-                {
-                    try { Directory.Delete(dir, true); } catch { }
-                }
-            }
-            catch { }
         }
     }
 }

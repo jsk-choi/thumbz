@@ -1,23 +1,30 @@
 ﻿using Microsoft.Extensions.Configuration;
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
 using System.Diagnostics;
 using thumbz.service;
 
-// 1. Validation
-if (!args.Any())
-{
-    Console.WriteLine("No paths supplied. Usage: thumbz [--skip] <path1> <path2>");
-    return;
-}
+const string Usage = "Usage: thumbz [--clean] <path1> <path2> ...\n" +
+                     "  --clean  Before processing a folder, delete sheets whose video no longer exists\n" +
+                     "           (sent to the Recycle Bin). Off by default.";
 
-// Check for --skip flag
-bool skipOrphanCleanup = args.Contains("--skip", StringComparer.OrdinalIgnoreCase);
-var paths = args.Where(a => !a.Equals("--skip", StringComparison.OrdinalIgnoreCase)).ToArray();
+// 1. Validation
+bool cleanOrphans = args.Contains("--clean", StringComparer.OrdinalIgnoreCase);
+bool legacySkip = args.Contains("--skip", StringComparer.OrdinalIgnoreCase);
+var paths = args
+    .Where(a => !a.Equals("--clean", StringComparison.OrdinalIgnoreCase)
+             && !a.Equals("--skip", StringComparison.OrdinalIgnoreCase))
+    .ToArray();
 
 if (!paths.Any())
 {
-    Console.WriteLine("No paths supplied. Usage: thumbz [--skip] <path1> <path2>");
+    Console.WriteLine("No paths supplied. " + Usage);
     return;
+}
+
+if (legacySkip)
+{
+    Console.WriteLine("Note: --skip is no longer needed; orphan cleanup is now off unless you pass --clean.\n");
 }
 
 // 2. Load Config
@@ -39,10 +46,8 @@ foreach (string path in paths)
 {
     if (Directory.Exists(path))
     {
-        if (!skipOrphanCleanup)
+        if (cleanOrphans)
             CleanOrphanedThumbnails(path);
-        else
-            Console.WriteLine("Skipping orphaned thumbnail cleanup (--skip).\n");
 
         await ProcessDirectoryWithParallelization(path);
     }
@@ -54,6 +59,44 @@ foreach (string path in paths)
     else
     {
         Console.WriteLine($"Path not found: {path}");
+    }
+}
+
+string SheetPathFor(string videoPath) =>
+    Path.Combine(Path.GetDirectoryName(videoPath)!, Path.GetFileNameWithoutExtension(videoPath) + cnf.SheetFileType);
+
+// Writes the sheet to a temp file and renames it into place, so an interrupted run never leaves
+// a half-written sheet that later runs would mistake for a finished one.
+// Returns false if the sheet already exists (another worker or process got there first).
+async Task<bool> SaveSheetAtomicAsync(Image<Rgba32> sheet, string sheetPath, CancellationToken ct = default)
+{
+    var format = sheet.Configuration.ImageFormatsManager.TryFindFormatByFileExtension(cnf.SheetFileType, out var f)
+        ? f
+        : throw new InvalidOperationException($"Unsupported SheetFileType: {cnf.SheetFileType}");
+    var encoder = sheet.Configuration.ImageFormatsManager.GetEncoder(format);
+
+    // Not ending in the sheet extension, so a leftover from a crash is never taken for a sheet
+    string tempPath = sheetPath + $".{Guid.NewGuid():N}.thumbz-tmp";
+    try
+    {
+        await using (var stream = File.Create(tempPath))
+        {
+            await sheet.SaveAsync(stream, encoder, ct);
+        }
+
+        try
+        {
+            File.Move(tempPath, sheetPath, overwrite: false);
+            return true;
+        }
+        catch (IOException) when (File.Exists(sheetPath))
+        {
+            return false;
+        }
+    }
+    finally
+    {
+        try { File.Delete(tempPath); } catch { }
     }
 }
 
@@ -80,13 +123,23 @@ void CleanOrphanedThumbnails(string path)
 
         if (!videoBaseNames.Contains(thumbBasePath))
         {
-            File.Delete(thumb);
-            Console.WriteLine($"Deleted orphan: {Path.GetFileName(thumb)}");
-            deleted++;
+            try
+            {
+                Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(
+                    thumb,
+                    Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs,
+                    Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
+                Console.WriteLine($"Deleted orphan: {Path.GetFileName(thumb)}");
+                deleted++;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Could not delete {Path.GetFileName(thumb)}: {ex.Message}");
+            }
         }
     }
 
-    Console.WriteLine($"Orphaned thumbnails removed: {deleted}\n");
+    Console.WriteLine($"Orphaned thumbnails moved to the Recycle Bin: {deleted}\n");
 }
 
 async Task ProcessDirectoryWithParallelization(string path)
@@ -100,13 +153,7 @@ async Task ProcessDirectoryWithParallelization(string path)
 
     // Filter to only files that need processing (no existing sheet)
     var filesToProcess = allVideoFiles
-        .Where(videoPath =>
-        {
-            string? dir = Path.GetDirectoryName(videoPath);
-            string name = Path.GetFileNameWithoutExtension(videoPath);
-            string expectedSheetPath = Path.Combine(dir!, $"{name}{cnf.SheetFileType}");
-            return !File.Exists(expectedSheetPath);
-        })
+        .Where(videoPath => !File.Exists(SheetPathFor(videoPath)))
         .ToList();
 
     int alreadyExist = allVideoFiles.Count - filesToProcess.Count;
@@ -127,9 +174,8 @@ async Task ProcessSingleFile(string videoPath)
 {
     try
     {
-        string? dir = Path.GetDirectoryName(videoPath);
         string name = Path.GetFileNameWithoutExtension(videoPath);
-        string expectedSheetPath = Path.Combine(dir!, $"{name}{cnf.SheetFileType}");
+        string expectedSheetPath = SheetPathFor(videoPath);
 
         // Check if already exists
         if (File.Exists(expectedSheetPath))
@@ -146,14 +192,10 @@ async Task ProcessSingleFile(string videoPath)
             sw.Stop();
             if (sheet != null)
             {
-                // Race condition guard
-                if (File.Exists(expectedSheetPath))
-                {
+                if (await SaveSheetAtomicAsync(sheet, expectedSheetPath))
+                    Console.WriteLine($"  Saved ({sw.Elapsed.TotalSeconds:F2}s)\n");
+                else
                     Console.WriteLine("  Skipped (created by another process)\n");
-                    return;
-                }
-                await sheet.SaveAsync(expectedSheetPath);
-                Console.WriteLine($"  Saved ({sw.Elapsed.TotalSeconds:F2}s)\n");
             }
             else
             {
@@ -173,7 +215,8 @@ async Task ProcessFilesInParallel(List<string> filesToProcess)
     int processed = 0, skipped = 0, errors = 0, done = 0;
     var consoleLock = new object();
 
-    int workers = Math.Max(1, cnf.MaxParallelism);
+    // No point in more workers than there are videos
+    int workers = Math.Max(1, Math.Min(cnf.MaxParallelism, total));
     Console.WriteLine($"Processing {total} videos with up to {workers} parallel workers...\n");
 
     var options = new ParallelOptions { MaxDegreeOfParallelism = workers };
@@ -185,8 +228,7 @@ async Task ProcessFilesInParallel(List<string> filesToProcess)
         string name = Path.GetFileNameWithoutExtension(videoPath);
         try
         {
-            string? dir = Path.GetDirectoryName(videoPath);
-            string expectedSheetPath = Path.Combine(dir!, $"{name}{cnf.SheetFileType}");
+            string expectedSheetPath = SheetPathFor(videoPath);
 
             // Another worker (or run) may already have produced it.
             if (File.Exists(expectedSheetPath))
@@ -202,16 +244,16 @@ async Task ProcessFilesInParallel(List<string> filesToProcess)
 
             if (sheet != null)
             {
-                // Race guard: another worker may have finished the same file first.
-                if (File.Exists(expectedSheetPath))
+                if (await SaveSheetAtomicAsync(sheet, expectedSheetPath, ct))
+                {
+                    Interlocked.Increment(ref processed);
+                    lock (consoleLock) Console.WriteLine($"[{n}/{total}] {name}\n  Saved ({localSw.Elapsed.TotalSeconds:F2}s)\n");
+                }
+                else
                 {
                     Interlocked.Increment(ref skipped);
                     lock (consoleLock) Console.WriteLine($"[{n}/{total}] {name}\n  Skipped (created by another worker)\n");
-                    return;
                 }
-                await sheet.SaveAsync(expectedSheetPath, ct);
-                Interlocked.Increment(ref processed);
-                lock (consoleLock) Console.WriteLine($"[{n}/{total}] {name}\n  Saved ({localSw.Elapsed.TotalSeconds:F2}s)\n");
             }
             else
             {
