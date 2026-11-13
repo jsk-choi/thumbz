@@ -43,10 +43,12 @@ namespace thumbz.service
             // --- Layout Calculations ---
             double vidWidth = mediaInfo.PrimaryVideoStream?.Width ?? 1920;
             double vidHeight = mediaInfo.PrimaryVideoStream?.Height ?? 1080;
-            _cnf.ThumbnailsDimension = vidHeight > (vidWidth * 1.1) ? _cnf.VerticalVideo : _cnf.HorizontalVideo;
+            // Local, not _cnf.* — this method runs concurrently across videos, so writing
+            // the chosen dimension back onto the shared config would be a data race.
+            var dim = vidHeight > (vidWidth * 1.1) ? _cnf.VerticalVideo : _cnf.HorizontalVideo;
 
-            int cols = _cnf.ThumbnailsDimension.ThumbnailsHorizontal;
-            int rows = _cnf.ThumbnailsDimension.ThumbnailsVertical;
+            int cols = dim.ThumbnailsHorizontal;
+            int rows = dim.ThumbnailsVertical;
             int totalFrames = cols * rows;
 
             int sheetWidth = _cnf.FinalSheetWidthPx;

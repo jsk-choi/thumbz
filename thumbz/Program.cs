@@ -35,17 +35,6 @@ var thumbz = new Thumbz(cnf);
 var sw = new Stopwatch();
 
 // 4. Run
-// Check for --filelist mode (used by spawned parallel processes)
-if (args.Length == 2 && args[0] == "--filelist" && File.Exists(args[1]))
-{
-    var files = File.ReadAllLines(args[1])
-        .Where(f => !string.IsNullOrWhiteSpace(f))
-        .OrderBy(_ => Random.Shared.Next()) // Re-randomize per process
-        .ToList();
-    await ProcessFileList(files, 1, 1);
-    return;
-}
-
 foreach (string path in paths)
 {
     if (Directory.Exists(path))
@@ -118,7 +107,6 @@ async Task ProcessDirectoryWithParallelization(string path)
             string expectedSheetPath = Path.Combine(dir!, $"{name}{cnf.SheetFileType}");
             return !File.Exists(expectedSheetPath);
         })
-        .OrderBy(_ => Random.Shared.Next()) // Randomize
         .ToList();
 
     int alreadyExist = allVideoFiles.Count - filesToProcess.Count;
@@ -132,42 +120,7 @@ async Task ProcessDirectoryWithParallelization(string path)
         return;
     }
 
-    // Decide whether to parallelize
-    if (total < 10)
-    {
-        Console.WriteLine("Processing in single thread...\n");
-        await ProcessFileList(filesToProcess, 1, 1);
-    }
-    else
-    {
-        Console.WriteLine($"Spawning 4 parallel processes...\n");
-        SpawnParallelProcesses(filesToProcess);
-        Console.WriteLine("All processes spawned. Monitor the new terminal windows for progress.\n");
-    }
-}
-
-void SpawnParallelProcesses(List<string> files)
-{
-    int processCount = 4;
-    string exePath = Process.GetCurrentProcess().MainModule!.FileName;
-
-    // Write all files to a temp list file (avoids command line length limits)
-    string fileListPath = Path.Combine(Path.GetTempPath(), $"thumbz_filelist_{Guid.NewGuid():N}.txt");
-    File.WriteAllLines(fileListPath, files);
-
-    for (int i = 0; i < processCount; i++)
-    {
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = "cmd.exe",
-            Arguments = $"/c title \"Thumbz Process {i + 1}/{processCount}\" && \"{exePath}\" --filelist \"{fileListPath}\"",
-            UseShellExecute = true,
-            CreateNoWindow = false
-        };
-
-        Process.Start(startInfo);
-        Console.WriteLine($"Process {i + 1}/{processCount}: {files.Count} files (shared queue)");
-    }
+    await ProcessFilesInParallel(filesToProcess);
 }
 
 async Task ProcessSingleFile(string videoPath)
@@ -214,66 +167,65 @@ async Task ProcessSingleFile(string videoPath)
     }
 }
 
-async Task ProcessFileList(List<string> filesToProcess, int batchNumber, int totalBatches)
+async Task ProcessFilesInParallel(List<string> filesToProcess)
 {
-    int processed = 0, skipped = 0, errors = 0;
     int total = filesToProcess.Count;
-    int current = 0;
+    int processed = 0, skipped = 0, errors = 0, done = 0;
+    var consoleLock = new object();
 
-    string batchInfo = totalBatches > 1 ? $" [Batch {batchNumber}/{totalBatches}]" : "";
+    int workers = Math.Max(1, cnf.MaxParallelism);
+    Console.WriteLine($"Processing {total} videos with up to {workers} parallel workers...\n");
 
-    foreach (var videoPath in filesToProcess)
+    var options = new ParallelOptions { MaxDegreeOfParallelism = workers };
+
+    await Parallel.ForEachAsync(filesToProcess, options, async (videoPath, ct) =>
     {
-        current++;
+        int n = Interlocked.Increment(ref done);
+        string name = Path.GetFileNameWithoutExtension(videoPath);
         try
         {
             string? dir = Path.GetDirectoryName(videoPath);
-            string name = Path.GetFileNameWithoutExtension(videoPath);
             string expectedSheetPath = Path.Combine(dir!, $"{name}{cnf.SheetFileType}");
 
-            // Double-check in case another process created it
+            // Another worker (or run) may already have produced it.
             if (File.Exists(expectedSheetPath))
             {
-                Console.WriteLine($"[{current}/{total} - {current * 100 / total}%]{batchInfo} {name}");
-                Console.WriteLine("  Skipped (already exists)\n");
-                skipped++;
-                continue;
+                Interlocked.Increment(ref skipped);
+                lock (consoleLock) Console.WriteLine($"[{n}/{total}] {name}\n  Skipped (already exists)\n");
+                return;
             }
 
-            Console.WriteLine($"[{current}/{total} - {current * 100 / total}%]{batchInfo} {name}");
-            sw.Restart();
+            var localSw = Stopwatch.StartNew();
+            using var sheet = thumbz.CreateThumbnailSheet(videoPath);
+            localSw.Stop();
 
-            using (var sheet = thumbz.CreateThumbnailSheet(videoPath))
+            if (sheet != null)
             {
-                sw.Stop();
-                if (sheet != null)
+                // Race guard: another worker may have finished the same file first.
+                if (File.Exists(expectedSheetPath))
                 {
-                    // Before saving (race condition guard)
-                    if (File.Exists(expectedSheetPath))
-                    {
-                        Console.WriteLine("  Skipped (created by another process)\n");
-                        skipped++;
-                        continue;
-                    }
-                    await sheet.SaveAsync(expectedSheetPath);
-                    Console.WriteLine($"  Saved ({sw.Elapsed.TotalSeconds:F2}s)\n");
-                    processed++;
+                    Interlocked.Increment(ref skipped);
+                    lock (consoleLock) Console.WriteLine($"[{n}/{total}] {name}\n  Skipped (created by another worker)\n");
+                    return;
                 }
-                else
-                {
-                    Console.WriteLine("  Failed (Null Output)\n");
-                    errors++;
-                }
+                await sheet.SaveAsync(expectedSheetPath, ct);
+                Interlocked.Increment(ref processed);
+                lock (consoleLock) Console.WriteLine($"[{n}/{total}] {name}\n  Saved ({localSw.Elapsed.TotalSeconds:F2}s)\n");
+            }
+            else
+            {
+                Interlocked.Increment(ref errors);
+                lock (consoleLock) Console.WriteLine($"[{n}/{total}] {name}\n  Failed (null output)\n");
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"  Error: {ex.Message}\n");
-            errors++;
+            Interlocked.Increment(ref errors);
+            lock (consoleLock) Console.WriteLine($"[{n}/{total}] {name}\n  Error: {ex.Message}\n");
         }
-    }
+    });
 
-    Console.WriteLine($"--- Summary{batchInfo} ---");
+    Console.WriteLine("--- Summary ---");
     Console.WriteLine($"Created: {processed} | Skipped: {skipped} | Errors: {errors}");
     Console.WriteLine("---------------------------------\n");
 }

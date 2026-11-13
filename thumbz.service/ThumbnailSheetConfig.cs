@@ -25,11 +25,10 @@ namespace thumbz.service
         public string DetailFontColorHex { get; set; } = "#000000";
         public double VideoStartSkipInLengthPercentage { get; set; } = 0.02;
         public string SheetFileType { get; set; } = ".jpg";
+        public int MaxParallelism { get; set; } = 4;
         public List<string> VideoExtensions { get; set; } = [".mp4", ".avi", ".mkv", ".mov", ".wmv"];
         public ThumbnailsDimension HorizontalVideo { get; set; } = new();
         public ThumbnailsDimension VerticalVideo { get; set; } = new();
-
-        public ThumbnailsDimension ThumbnailsDimension { get; set; } = new();
     }
 
 
