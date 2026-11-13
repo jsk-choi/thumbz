@@ -177,6 +177,7 @@ async Task ProcessFilesInParallel(List<string> filesToProcess)
     Console.WriteLine($"Processing {total} videos with up to {workers} parallel workers...\n");
 
     var options = new ParallelOptions { MaxDegreeOfParallelism = workers };
+    var overallSw = Stopwatch.StartNew();
 
     await Parallel.ForEachAsync(filesToProcess, options, async (videoPath, ct) =>
     {
@@ -225,7 +226,14 @@ async Task ProcessFilesInParallel(List<string> filesToProcess)
         }
     });
 
+    overallSw.Stop();
+    double totalSecs = overallSw.Elapsed.TotalSeconds;
+    string totalStr = totalSecs >= 60 ? $"{overallSw.Elapsed:mm\\:ss} ({totalSecs:F0}s)" : $"{totalSecs:F1}s";
+
     Console.WriteLine("--- Summary ---");
     Console.WriteLine($"Created: {processed} | Skipped: {skipped} | Errors: {errors}");
+    Console.WriteLine($"Total time: {totalStr}");
+    if (processed > 0)
+        Console.WriteLine($"Avg per sheet: {totalSecs / processed:F2}s  ({processed} sheets / {totalSecs:F1}s)");
     Console.WriteLine("---------------------------------\n");
 }
